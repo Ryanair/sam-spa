@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Serverless SPA website
+
+  A serverless website for SPA
+Parameters:
+  WebACLId:
+    Type: String
+    Description: WAFArn
+  Domain:
+    Type: String
+    Description: Domain alias
+  AcmCertificateArn:
+    Type: String
+    Description: Certificate ARN
+  BucketName:
+    Type: String
+    Description: Bucket name
+Metadata:
+  AWS::ServerlessRepo::Application:
+    Name: serverless-spa
+    Description: A serverless SPA container
+    Author: user1
+    SpdxLicenseId: MIT
+    LicenseUrl: LICENSE.txt
+    ReadmeUrl: README.md
+    Labels: ['SPA', 'Serverless', 'Cloudfront']
+    HomePageUrl: https://github.com/Ryanair/sam-spa
+    SemanticVersion: 0.0.1
+    SourceCodeUrl: https://github.com/Ryanair/sam-spa  
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+
+
+Conditions:
+  HasWebAcl: !Not [!Equals [!Ref WebACLId, '']]
+  HasAcm: !Not [!Equals [!Ref AcmCertificateArn, '']]
+  HasDomain: !Not [!Equals [!Ref Domain, '']]
+
+Resources:
+
+  LambdaEdgeFunctionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: '/'
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Sid: "AllowLambdaServiceToAssumeRole"
+            Effect: "Allow"
+            Action: 
+              - "sts:AssumeRole"
+            Principal:
+              Service: 
+                - "lambda.amazonaws.com"
+                - "edgelambda.amazonaws.com"
+
+  RewriteLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: rewrite/
+      Description: 'Rewrite lambda for SPA'
+      Handler: app.lambdaHandler
+      Runtime: nodejs10.x
+      MemorySize: 128
+      Timeout: 1
+      Role: !GetAtt LambdaEdgeFunctionRole.Arn
+      AutoPublishAlias: live
+
+  SecureHeadersLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: secure-headers/
+      Description: 'Add security headers to index.html response'
+      Handler: app.lambdaHandler
+      Runtime: nodejs10.x
+      MemorySize: 128
+      Timeout: 1
+      Role: !GetAtt LambdaEdgeFunctionRole.Arn
+      AutoPublishAlias: live
+
+  CloudFrontOriginAccessIdentity:
+    Type: 'AWS::CloudFront::CloudFrontOriginAccessIdentity'
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Origin access identity serverless website'
+
+  WebsiteCloudfrontDistribution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        WebACLId: 
+          !If
+            - HasWebAcl
+            - !Ref WebACLId
+            - !Ref AWS::NoValue
+        PriceClass: 'PriceClass_100' #If needed global replication you can remove it
+        Aliases:
+          !If
+            - HasDomain
+            - - !Ref Domain
+            - !Ref AWS::NoValue
+        Comment: "Cloudfront distribution for serverless website"
+        ViewerCertificate:
+          AcmCertificateArn:
+            !If
+              - HasAcm
+              - !Ref AcmCertificateArn
+              - !Ref AWS::NoValue
+          CloudFrontDefaultCertificate:
+            !If
+              - HasAcm
+              - 'false'
+              - 'true'
+          MinimumProtocolVersion:
+            !If
+              - HasAcm
+              - 'TLSv1.2_2018'
+              - !Ref AWS::NoValue
+          SslSupportMethod: 
+            !If
+              - HasAcm
+              - 'sni-only'
+              - !Ref AWS::NoValue
+        DefaultRootObject: "index.html"
+        Enabled: 'true'
+        HttpVersion: 'http2'
+        Origins:
+          - Id: 's3-website'
+            DomainName: !Join ['.', [!Ref BucketName, 's3.amazonaws.com']]
+            S3OriginConfig: 
+              OriginAccessIdentity: 
+                Fn::Sub: 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        DefaultCacheBehavior:
+          Compress: 'true'
+          ForwardedValues:
+            QueryString: 'false'
+          TargetOriginId: 's3-website'
+          ViewerProtocolPolicy : "redirect-to-https"
+          LambdaFunctionAssociations:
+            - EventType: 'origin-request'
+              LambdaFunctionARN: !Ref RewriteLambda.Version
+            - EventType: 'viewer-response'
+              LambdaFunctionARN: !Ref SecureHeadersLambda.Version
+        CacheBehaviors:
+          - PathPattern: '/dist/*'
+            Compress: 'true'
+            TargetOriginId: 's3-website'
+            ViewerProtocolPolicy : "redirect-to-https"
+            ForwardedValues:
+              QueryString: 'false'
+
+  WebHostingS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+
+  WebHostingS3BucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket: !Ref WebHostingS3Bucket
+      PolicyDocument:
+        Statement:
+          -
+            Effect: Allow
+            Action: 's3:GetObject'
+            Resource:
+              - !Sub "arn:aws:s3:::${WebHostingS3Bucket}/*"
+            Principal:
+              AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
+Outputs:
+    RewriteLambdaEdge: 
+      Description: Rewrite Lambda@Edge
+      Value: !GetAtt RewriteLambda.Arn
+
+    RewriteLambdaEdgeVersion: 
+      Description: RewriteLambdaEdge version
+      Value: !Ref RewriteLambda.Version
+
+    SecureHeadersLambdaEdge: 
+      Description: Secure headers Lambda@Edge
+      Value: !GetAtt SecureHeadersLambda.Arn
+
+    SecureHeadersLambdaEdgeVersion: 
+      Description: SecureHeaders version
+      Value: !Ref SecureHeadersLambda.Version
+
+    CFDistribution: 
+      Description: Cloudfront Distribution Domain Name
+      Value: !GetAtt WebsiteCloudfrontDistribution.DomainName
