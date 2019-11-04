@@ -92,7 +92,7 @@ Resources:
       CloudFrontOriginAccessIdentityConfig:
         Comment: 'Origin access identity serverless website'
 
-  WebsiteCloudfrontDistribution:
+  CloudfrontDistribution:
     Type: "AWS::CloudFront::Distribution"
     Properties:
       DistributionConfig:
@@ -157,22 +157,22 @@ Resources:
             ForwardedValues:
               QueryString: 'false'
 
-  WebHostingS3Bucket:
+  S3Bucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Ref BucketName
 
-  WebHostingS3BucketPolicy:
+  S3BucketPolicy:
     Type: "AWS::S3::BucketPolicy"
     Properties:
-      Bucket: !Ref WebHostingS3Bucket
+      Bucket: !Ref S3Bucket
       PolicyDocument:
         Statement:
           -
             Effect: Allow
             Action: 's3:GetObject'
             Resource:
-              - !Sub "arn:aws:s3:::${WebHostingS3Bucket}/*"
+              - !Sub "arn:aws:s3:::${S3Bucket}/*"
             Principal:
               AWS: !Sub "arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}"
 Outputs:
@@ -194,4 +194,4 @@ Outputs:
 
     CFDistribution: 
       Description: Cloudfront Distribution Domain Name
-      Value: !GetAtt WebsiteCloudfrontDistribution.DomainName
+      Value: !GetAtt CloudfrontDistribution.DomainName
